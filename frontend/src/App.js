@@ -13,6 +13,7 @@ import WholesalerDashboard from '@/pages/WholesalerDashboard';
 import ProductDetailPage from '@/pages/ProductDetailPage';
 import CartPage from '@/pages/CartPage';
 import CheckoutPage from '@/pages/CheckoutPage';
+import PaymentPage from '@/pages/PaymentPage';
 import OrdersPage from '@/pages/OrdersPage';
 import OrderDetailPage from '@/pages/OrderDetailPage';
 
@@ -112,6 +113,15 @@ function AppRoutes() {
         element={
           <ProtectedRoute allowedRoles={['customer']}>
             <CheckoutPage />
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/payment"
+        element={
+          <ProtectedRoute allowedRoles={['customer']}>
+            <PaymentPage />
           </ProtectedRoute>
         }
       />

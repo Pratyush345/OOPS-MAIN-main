@@ -133,8 +133,28 @@ const CustomerDashboard = () => {
     setLoading(true);
 
     try {
+      console.log("🔍 Fetching products for retailer:", RETAILER_ID);
       const res = await productsAPI.getByRetailer(RETAILER_ID);
       let filtered = res.data;
+
+      console.log("📦 Products from assigned retailer:", filtered.length);
+
+      // If products found from assigned retailer, show those at top, then others
+      if (filtered.length > 0) {
+        console.log("✅ Found products from assigned retailer, fetching others too");
+        const allRes = await productsAPI.getAll();
+        const otherProducts = allRes.data.filter(
+          p => p.seller_id !== RETAILER_ID
+        );
+        // Assigned retailer products first, then others
+        filtered = [...filtered, ...otherProducts];
+      } else {
+        // No products from assigned retailer, show all
+        console.log("⚠️ No products from assigned retailer, showing all products");
+        const allRes = await productsAPI.getAll();
+        filtered = allRes.data;
+        toast.info("Showing products from all retailers");
+      }
 
       // Filter by category
       if (selectedCategory !== "all") {
@@ -432,6 +452,17 @@ const CustomerDashboard = () => {
                     <p className="text-sm text-gray-600 line-clamp-2">
                       {product.description}
                     </p>
+
+                    {/* Rating Display */}
+                    {product.rating > 0 && (
+                      <div className="flex items-center gap-1 mt-2">
+                        <span className="text-yellow-400">★</span>
+                        <span className="text-sm font-semibold">{product.rating.toFixed(1)}</span>
+                        {product.review_count && (
+                          <span className="text-xs text-gray-500">({product.review_count})</span>
+                        )}
+                      </div>
+                    )}
 
                     <div className="flex justify-between my-2">
                       <span className="text-lg font-bold text-blue-600">

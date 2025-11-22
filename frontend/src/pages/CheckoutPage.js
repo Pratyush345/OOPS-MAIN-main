@@ -2,7 +2,6 @@
 import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
-import useRazorpay from "react-razorpay";
 
 import Navbar from "@/components/Navbar";
 import { Button } from "@/components/ui/button";
@@ -13,17 +12,16 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 
 import { cartAPI, productsAPI, ordersAPI, healthAPI } from "@/api/api";
 import { toast } from "sonner";
-import { CreditCard, Wallet, ShoppingCart } from "lucide-react";
+import { Wallet, ShoppingCart, CreditCard } from "lucide-react";
 
 const CheckoutPage = () => {
   const navigate = useNavigate();
   const { user, loadRetailerStats } = useAuth();
-  const [Razorpay] = useRazorpay();
 
   const [cartItems, setCartItems] = useState([]);
   const [loading, setLoading] = useState(false);
   const [deliveryAddress, setDeliveryAddress] = useState(user?.address || "");
-  const [paymentMethod, setPaymentMethod] = useState("razorpay");
+  const [paymentMethod, setPaymentMethod] = useState("cod");
   const [backendStatus, setBackendStatus] = useState("checking");
 
   useEffect(() => {
@@ -133,135 +131,49 @@ const CheckoutPage = () => {
     setLoading(true);
 
     try {
-      const total = calculateTotal();
       const items = cartItems.map((it) => ({
         product_id: it.product.id,
         quantity: it.quantity,
       }));
 
-      // If payment method is COD, create order directly
-      if (paymentMethod === "cod") {
-        const payload = {
-          items,
-          delivery_address: deliveryAddress,
-          payment_method: "cod",
-        };
-
-        console.log("🎯 Placing COD order with payload:", payload);
-        const response = await ordersAPI.create(user.id, payload);
-        console.log("✅ Order created:", response.data);
-
-        // Update seller stats
-        const sellerIds = [
-          ...new Set(cartItems.map((it) => it.product.seller_id).filter(id => id && id !== "unknown")),
-        ];
-        sellerIds.forEach((sid) => {
-          if (loadRetailerStats) {
-            loadRetailerStats(sid);
+      // If card payment, redirect to payment page
+      if (paymentMethod === "card") {
+        const total = calculateTotal();
+        navigate("/payment", {
+          state: {
+            items,
+            deliveryAddress,
+            total,
+            cartItems
           }
         });
-
-        toast.success("Order placed successfully!");
-        navigate(`/order/${response.data.id}`);
+        setLoading(false);
         return;
       }
 
-      // Razorpay payment flow
-      console.log("🎯 Creating Razorpay order for amount:", total);
-
-      // Step 1: Create Razorpay order on backend
-      const orderResponse = await fetch(`${process.env.REACT_APP_BACKEND_URL}/api/payment/create-order`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          amount: total,
-          currency: "INR",
-          user_id: user.id,
-          items,
-          delivery_address: deliveryAddress,
-        }),
-      });
-
-      if (!orderResponse.ok) {
-        throw new Error("Failed to create payment order");
-      }
-
-      const orderData = await orderResponse.json();
-      console.log("✅ Razorpay order created:", orderData);
-
-      // Step 2: Open Razorpay checkout
-      const options = {
-        key: orderData.key_id,
-        amount: orderData.amount * 100, // Convert to paise
-        currency: orderData.currency,
-        name: "LiveMART",
-        description: "Order Payment",
-        order_id: orderData.order_id,
-        handler: async function (response) {
-          console.log("✅ Payment successful:", response);
-
-          try {
-            // Step 3: Verify payment on backend
-            const verifyResponse = await fetch(`${process.env.REACT_APP_BACKEND_URL}/api/payment/verify`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                razorpay_order_id: response.razorpay_order_id,
-                razorpay_payment_id: response.razorpay_payment_id,
-                razorpay_signature: response.razorpay_signature,
-                user_id: user.id,
-                items,
-                delivery_address: deliveryAddress,
-                total_amount: total,
-              }),
-            });
-
-            if (!verifyResponse.ok) {
-              throw new Error("Payment verification failed");
-            }
-
-            const verifyData = await verifyResponse.json();
-            console.log("✅ Payment verified:", verifyData);
-
-            // Update seller stats
-            const sellerIds = [
-              ...new Set(cartItems.map((it) => it.product.seller_id).filter(id => id && id !== "unknown")),
-            ];
-            sellerIds.forEach((sid) => {
-              if (loadRetailerStats) {
-                loadRetailerStats(sid);
-              }
-            });
-
-            toast.success("Payment successful! Order placed.");
-            navigate(`/order/${verifyData.order.id}`);
-          } catch (error) {
-            console.error("❌ Payment verification error:", error);
-            toast.error("Payment verification failed. Please contact support.");
-          } finally {
-            setLoading(false);
-          }
-        },
-        prefill: {
-          name: user.name,
-          email: user.email,
-          contact: user.phone,
-        },
-        theme: {
-          color: "#7C3AED",
-        },
-        modal: {
-          ondismiss: function() {
-            console.log("Payment cancelled");
-            toast.error("Payment cancelled");
-            setLoading(false);
-          }
-        }
+      // COD order
+      const payload = {
+        items,
+        delivery_address: deliveryAddress,
+        payment_method: "cod",
       };
 
-      const razorpayInstance = new Razorpay(options);
-      razorpayInstance.open();
+      console.log("🎯 Placing COD order with payload:", payload);
+      const response = await ordersAPI.create(user.id, payload);
+      console.log("✅ Order created:", response.data);
 
+      // Update seller stats
+      const sellerIds = [
+        ...new Set(cartItems.map((it) => it.product.seller_id).filter(id => id && id !== "unknown")),
+      ];
+      sellerIds.forEach((sid) => {
+        if (loadRetailerStats) {
+          loadRetailerStats(sid);
+        }
+      });
+
+      toast.success("Order placed successfully!");
+      navigate(`/order/${response.data.id}`);
     } catch (error) {
       console.error("❌ Order error:", {
         message: error.message,
@@ -343,10 +255,10 @@ const CheckoutPage = () => {
                       onValueChange={setPaymentMethod}
                     >
                       <div className="flex items-center gap-2 mb-3">
-                        <RadioGroupItem value="razorpay" id="razorpay" />
-                        <Label htmlFor="razorpay" className="cursor-pointer flex items-center">
+                        <RadioGroupItem value="card" id="card" />
+                        <Label htmlFor="card" className="cursor-pointer flex items-center">
                           <CreditCard className="mr-2 h-4 w-4" />
-                          Pay Online (Razorpay)
+                          Pay with Card
                         </Label>
                       </div>
 
@@ -410,7 +322,7 @@ const CheckoutPage = () => {
                       disabled={loading || backendStatus !== "healthy"}
                       className="w-full mt-6"
                     >
-                      {loading ? "Placing Order…" : "Place Order"}
+                      {loading ? "Processing..." : paymentMethod === "card" ? "Proceed to Payment" : "Place Order"}
                     </Button>
 
                     {backendStatus !== "healthy" && (

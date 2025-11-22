@@ -158,6 +158,17 @@ export default function RetailerBuyingPage() {
                   {p.description}
                 </p>
 
+                {/* Rating Display */}
+                {p.rating > 0 && (
+                  <div className="flex items-center gap-1 mt-2">
+                    <span className="text-yellow-400">★</span>
+                    <span className="text-sm font-semibold text-white">{p.rating.toFixed(1)}</span>
+                    {p.review_count && (
+                      <span className="text-xs text-gray-400">({p.review_count})</span>
+                    )}
+                  </div>
+                )}
+
                 <div className="flex justify-between items-center mt-4">
                   <span className="text-[#6A8BFF] font-bold text-lg">
                     ₹{p.price}

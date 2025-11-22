@@ -85,12 +85,35 @@ const ProductDetailPage = () => {
       productData.rating = Number(productData.rating) || 0;
       
       setProduct(productData);
-      setFeedback([]); // Empty feedback for now
+      
+      // Load feedback for this product
+      await loadFeedback(id);
     } catch (error) {
       console.error("❌ Load error:", error);
       toast.error("Failed to load product. Please check backend connection.");
     } finally {
       setLoading(false);
+    }
+  };
+
+  const loadFeedback = async (productId) => {
+    try {
+      console.log("🔄 Loading feedback for product:", productId);
+      
+      const response = await fetch(`http://127.0.0.1:8000/api/feedback/product/${productId}`);
+      
+      if (!response.ok) {
+        console.error("Failed to load feedback:", response.status);
+        return;
+      }
+      
+      const feedbackData = await response.json();
+      console.log("✅ Feedback loaded:", feedbackData);
+      
+      setFeedback(feedbackData);
+    } catch (error) {
+      console.error("❌ Feedback load error:", error);
+      // Don't show error toast for feedback - it's optional
     }
   };
 
@@ -184,16 +207,18 @@ const ProductDetailPage = () => {
       setComment("");
       setRating("5");
 
-      // Add to local state
-      const userFeedback = {
-        id: newFeedback.id || Date.now().toString(),
-        user_name: user.name || "You",
-        rating: parseInt(rating),
-        comment: comment.trim(),
-        created_at: new Date().toISOString()
-      };
-
-      setFeedback(prev => [userFeedback, ...prev]);
+      // Reload feedback list
+      await loadFeedback(id);
+      
+      // Reload product to get updated rating
+      const productResponse = await fetch(`http://127.0.0.1:8000/api/products/${id}`);
+      if (productResponse.ok) {
+        const updatedProduct = await productResponse.json();
+        updatedProduct.price = Number(updatedProduct.price) || 0;
+        updatedProduct.stock = Number(updatedProduct.stock) || 0;
+        updatedProduct.rating = Number(updatedProduct.rating) || 0;
+        setProduct(updatedProduct);
+      }
 
     } catch (error) {
       console.error("❌ Feedback submission error:", error);
@@ -314,7 +339,10 @@ const ProductDetailPage = () => {
             {/* Rating - Clean layout */}
             <div className="flex items-center gap-3">
               {renderStars(product.rating)}
-              <span className="text-gray-600">({feedback.length} reviews)</span>
+              <span className="text-gray-600">
+                {product.rating > 0 ? `${product.rating.toFixed(1)} ` : ""}
+                ({product.review_count || feedback.length || 0} reviews)
+              </span>
             </div>
 
             <div className="text-3xl font-bold text-blue-600">

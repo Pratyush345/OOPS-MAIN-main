@@ -26,9 +26,9 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
-import razorpay
 import hmac
 import hashlib
+import math
 
 # ================= CONFIG =====================
 ROOT_DIR = Path(__file__).parent
@@ -49,11 +49,6 @@ OTP_EXPIRY_MINUTES = int(os.getenv("OTP_EXPIRY_MINUTES", "5"))
 
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
-
-# Razorpay Config
-RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID", "")
-RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET", "")
-razorpay_client = razorpay.Client(auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET)) if RAZORPAY_KEY_ID else None
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("server")
@@ -240,13 +235,34 @@ async def register(data: UserCreate):
     
     # If user is a customer with pincode, find matching retailer
     if data.role == "customer" and data.pincode:
+        # First try exact pincode match
         matching_retailer = await db.users.find_one({
             "role": "retailer",
             "pincode": data.pincode
         })
+        
+        # If no exact match, find closest retailer by pincode proximity
+        if not matching_retailer:
+            all_retailers = await db.users.find(
+                {"role": "retailer", "pincode": {"$exists": True, "$ne": None}}
+            ).to_list(1000)
+            
+            if all_retailers:
+                def pincode_distance(pincode1: str, pincode2: str) -> float:
+                    try:
+                        return abs(int(pincode1) - int(pincode2))
+                    except (ValueError, TypeError):
+                        return float('inf')
+                
+                matching_retailer = min(
+                    all_retailers,
+                    key=lambda r: pincode_distance(data.pincode, r.get("pincode", ""))
+                )
+        
         if matching_retailer:
             user_dict["preferred_retailer_id"] = matching_retailer["id"]
-            logger.info(f"Matched customer to retailer {matching_retailer['id']} by pincode {data.pincode}")
+            match_type = "exact" if matching_retailer.get("pincode") == data.pincode else "proximity"
+            logger.info(f"Matched customer to retailer {matching_retailer['id']} by {match_type} (pincode {data.pincode})")
     
     user = User(**user_dict)
 
@@ -268,17 +284,38 @@ async def login(data: UserLogin):
     
     # Check if customer needs retailer matching based on pincode
     if user_doc.get("role") == "customer" and user_doc.get("pincode") and not user_doc.get("preferred_retailer_id"):
+        # First try exact pincode match
         matching_retailer = await db.users.find_one({
             "role": "retailer",
             "pincode": user_doc.get("pincode")
         })
+        
+        # If no exact match, find closest retailer
+        if not matching_retailer:
+            all_retailers = await db.users.find(
+                {"role": "retailer", "pincode": {"$exists": True, "$ne": None}}
+            ).to_list(1000)
+            
+            if all_retailers:
+                def pincode_distance(pincode1: str, pincode2: str) -> float:
+                    try:
+                        return abs(int(pincode1) - int(pincode2))
+                    except (ValueError, TypeError):
+                        return float('inf')
+                
+                matching_retailer = min(
+                    all_retailers,
+                    key=lambda r: pincode_distance(user_doc.get("pincode"), r.get("pincode", ""))
+                )
+        
         if matching_retailer:
             user_doc["preferred_retailer_id"] = matching_retailer["id"]
             await db.users.update_one(
                 {"id": user_doc["id"]},
                 {"$set": {"preferred_retailer_id": matching_retailer["id"]}}
             )
-            logger.info(f"Matched customer {user_doc['id']} to retailer {matching_retailer['id']} by pincode")
+            match_type = "exact" if matching_retailer.get("pincode") == user_doc.get("pincode") else "proximity"
+            logger.info(f"Matched customer {user_doc['id']} to retailer {matching_retailer['id']} by {match_type}")
     
     user = User(**user_doc)
 
@@ -388,10 +425,30 @@ async def google_auth(data: GoogleAuthRequest):
             )
             
             if user_doc.get("role") == "customer" and user_doc.get("pincode") and not user_doc.get("preferred_retailer_id"):
+                # First try exact pincode match
                 matching_retailer = await db.users.find_one({
                     "role": "retailer",
                     "pincode": user_doc.get("pincode")
                 })
+                
+                # If no exact match, find closest retailer
+                if not matching_retailer:
+                    all_retailers = await db.users.find(
+                        {"role": "retailer", "pincode": {"$exists": True, "$ne": None}}
+                    ).to_list(1000)
+                    
+                    if all_retailers:
+                        def pincode_distance(pincode1: str, pincode2: str) -> float:
+                            try:
+                                return abs(int(pincode1) - int(pincode2))
+                            except (ValueError, TypeError):
+                                return float('inf')
+                        
+                        matching_retailer = min(
+                            all_retailers,
+                            key=lambda r: pincode_distance(user_doc.get("pincode"), r.get("pincode", ""))
+                        )
+                
                 if matching_retailer:
                     user_doc["preferred_retailer_id"] = matching_retailer["id"]
                     await db.users.update_one(
@@ -463,13 +520,34 @@ async def update_user_profile(user_id: str, data: UserProfileUpdate):
     if update_data.get("role") == "customer" or (user.get("role") == "customer" and data.pincode):
         pincode = data.pincode or user.get("pincode")
         if pincode:
+            # First try exact match
             matching_retailer = await db.users.find_one({
                 "role": "retailer",
                 "pincode": pincode
             })
+            
+            # If no exact match, find closest retailer
+            if not matching_retailer:
+                all_retailers = await db.users.find(
+                    {"role": "retailer", "pincode": {"$exists": True, "$ne": None}}
+                ).to_list(1000)
+                
+                if all_retailers:
+                    def pincode_distance(pincode1: str, pincode2: str) -> float:
+                        try:
+                            return abs(int(pincode1) - int(pincode2))
+                        except (ValueError, TypeError):
+                            return float('inf')
+                    
+                    matching_retailer = min(
+                        all_retailers,
+                        key=lambda r: pincode_distance(pincode, r.get("pincode", ""))
+                    )
+            
             if matching_retailer:
                 update_data["preferred_retailer_id"] = matching_retailer["id"]
-                logger.info(f"Matched customer to retailer {matching_retailer['id']} by pincode {pincode}")
+                match_type = "exact" if matching_retailer.get("pincode") == pincode else "proximity"
+                logger.info(f"Matched customer to retailer {matching_retailer['id']} by {match_type} (pincode {pincode})")
     
     await db.users.update_one({"id": user_id}, {"$set": update_data})
     
@@ -478,11 +556,38 @@ async def update_user_profile(user_id: str, data: UserProfileUpdate):
 
 @api.get("/retailers/by-pincode/{pincode}")
 async def get_retailers_by_pincode(pincode: str):
-    retailers = await db.users.find(
+    # First try exact match
+    exact_retailers = await db.users.find(
         {"role": "retailer", "pincode": pincode},
         {"_id": 0, "password": 0}
     ).to_list(100)
-    return retailers
+    
+    if exact_retailers:
+        return exact_retailers
+    
+    # If no exact match, get all retailers and sort by pincode proximity
+    all_retailers = await db.users.find(
+        {"role": "retailer", "pincode": {"$exists": True, "$ne": None}},
+        {"_id": 0, "password": 0}
+    ).to_list(1000)
+    
+    # Calculate distance and sort
+    def pincode_distance(pincode1: str, pincode2: str) -> float:
+        """Calculate simple numeric distance between pincodes"""
+        try:
+            p1 = int(pincode1)
+            p2 = int(pincode2)
+            return abs(p1 - p2)
+        except (ValueError, TypeError):
+            return float('inf')
+    
+    # Sort retailers by pincode proximity
+    sorted_retailers = sorted(
+        all_retailers,
+        key=lambda r: pincode_distance(pincode, r.get("pincode", ""))
+    )
+    
+    return sorted_retailers
 
 @api.put("/users/{user_id}/preferred-retailer")
 async def update_preferred_retailer(user_id: str, payload: dict = Body(...)):
@@ -555,23 +660,66 @@ async def create_feedback(uid: str, payload: dict = Body(...)):
     try:
         print(f"📝 Creating feedback for user: {uid}")
         print(f"📝 Feedback payload: {json.dumps(payload, indent=2)}")
+        
         if not payload.get("product_id"):
             raise HTTPException(status_code=400, detail="product_id is required")
+        
         rating = safe_int(payload.get("rating", 5))
         if rating < 1 or rating > 5:
             raise HTTPException(status_code=400, detail="Rating must be between 1 and 5")
-        feedback_data = {
-            "id": str(uuid.uuid4()),
+        
+        # Get user info
+        user = await db.users.find_one({"id": uid})
+        user_name = user.get("name", "Anonymous") if user else "Anonymous"
+        
+        # Check if user already reviewed this product
+        existing_feedback = await db.feedback.find_one({
             "user_id": uid,
-            "user_name": "User",
-            "product_id": payload.get("product_id"),
-            "rating": rating,
-            "comment": payload.get("comment", ""),
-            "created_at": datetime.now(timezone.utc).isoformat(),
-        }
-        print(f"📝 Inserting feedback: {feedback_data}")
-        result = await db.feedback.insert_one(feedback_data)
-        print(f"✅ Feedback inserted with ID: {result.inserted_id}")
+            "product_id": payload.get("product_id")
+        })
+        
+        if existing_feedback:
+            # Update existing feedback
+            await db.feedback.update_one(
+                {"id": existing_feedback["id"]},
+                {"$set": {
+                    "rating": rating,
+                    "comment": payload.get("comment", ""),
+                    "updated_at": datetime.now(timezone.utc).isoformat()
+                }}
+            )
+            feedback_data = existing_feedback
+            feedback_data["rating"] = rating
+            feedback_data["comment"] = payload.get("comment", "")
+        else:
+            # Create new feedback
+            feedback_data = {
+                "id": str(uuid.uuid4()),
+                "user_id": uid,
+                "user_name": user_name,
+                "product_id": payload.get("product_id"),
+                "rating": rating,
+                "comment": payload.get("comment", ""),
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+            await db.feedback.insert_one(feedback_data)
+        
+        # Recalculate product average rating
+        all_feedback = await db.feedback.find(
+            {"product_id": payload.get("product_id")}
+        ).to_list(1000)
+        
+        if all_feedback:
+            avg_rating = sum(f.get("rating", 0) for f in all_feedback) / len(all_feedback)
+            await db.products.update_one(
+                {"id": payload.get("product_id")},
+                {"$set": {
+                    "rating": round(avg_rating, 1),
+                    "review_count": len(all_feedback)
+                }}
+            )
+            print(f"✅ Updated product rating: {avg_rating:.1f} from {len(all_feedback)} reviews")
+        
         feedback_data.pop('_id', None)
         return feedback_data
     except HTTPException:
@@ -585,9 +733,16 @@ async def create_feedback(uid: str, payload: dict = Body(...)):
 async def get_product_feedback(product_id: str):
     try:
         print(f"📝 Getting feedback for product: {product_id}")
-        return []
+        feedback_list = await db.feedback.find(
+            {"product_id": product_id},
+            {"_id": 0}
+        ).sort("created_at", -1).to_list(100)
+        
+        print(f"✅ Found {len(feedback_list)} reviews")
+        return feedback_list
     except Exception as e:
         print(f"❌ Get feedback error: {str(e)}")
+        logger.error(f"Get feedback error: {str(e)}")
         return []
 
 # ============== SEED-DATA ============================
@@ -846,114 +1001,6 @@ async def clear_cart(uid: str):
     await db.cart.delete_one({"user_id": uid})
     return {"message": "Cart cleared"}
 
-# ================= RAZORPAY PAYMENT ==================
-class RazorpayOrderRequest(BaseModel):
-    amount: float
-    currency: str = "INR"
-    user_id: str
-    items: List[dict]
-    delivery_address: str
-
-class RazorpayVerifyRequest(BaseModel):
-    razorpay_order_id: str
-    razorpay_payment_id: str
-    razorpay_signature: str
-    user_id: str
-    items: List[dict]
-    delivery_address: str
-    total_amount: float
-
-@api.post("/payment/create-order")
-async def create_razorpay_order(payload: RazorpayOrderRequest):
-    try:
-        if not razorpay_client:
-            raise HTTPException(500, "Razorpay not configured")
-        amount_in_paise = int(payload.amount * 100)
-        razorpay_order = razorpay_client.order.create({
-            "amount": amount_in_paise,
-            "currency": payload.currency,
-            "payment_capture": 1
-        })
-        logger.info(f"✅ Razorpay order created: {razorpay_order['id']}")
-        return {
-            "order_id": razorpay_order["id"],
-            "amount": payload.amount,
-            "currency": payload.currency,
-            "key_id": RAZORPAY_KEY_ID
-        }
-    except Exception as e:
-        logger.error(f"❌ Razorpay order creation failed: {e}")
-        raise HTTPException(500, f"Payment order creation failed: {str(e)}")
-
-@api.post("/payment/verify")
-async def verify_razorpay_payment(payload: RazorpayVerifyRequest):
-    try:
-        if not razorpay_client:
-            raise HTTPException(500, "Razorpay not configured")
-        generated_signature = hmac.new(
-            RAZORPAY_KEY_SECRET.encode(),
-            f"{payload.razorpay_order_id}|{payload.razorpay_payment_id}".encode(),
-            hashlib.sha256
-        ).hexdigest()
-        if generated_signature != payload.razorpay_signature:
-            raise HTTPException(400, "Invalid payment signature")
-        logger.info(f"✅ Payment verified: {payload.razorpay_payment_id}")
-        user = await db.users.find_one({"id": payload.user_id})
-        if not user:
-            raise HTTPException(404, f"User not found: {payload.user_id}")
-        order_items = []
-        total = 0.0
-        for it in payload.items:
-            pid = it["product_id"]
-            qty = safe_int(it["quantity"])
-            product = await db.products.find_one({"id": pid})
-            if not product:
-                raise HTTPException(404, f"Product not found: {pid}")
-            if product["stock"] < qty:
-                raise HTTPException(400, f"Insufficient stock for {product['name']}")
-            subtotal = product["price"] * qty
-            total += subtotal
-            order_items.append({
-                "product_id": pid,
-                "product_name": product["name"],
-                "quantity": qty,
-                "price": product["price"],
-                "total": subtotal,
-                "seller_id": product["seller_id"]
-            })
-        order = {
-            "id": str(uuid.uuid4()),
-            "user_id": payload.user_id,
-            "items": order_items,
-            "total_amount": total,
-            "delivery_address": payload.delivery_address,
-            "payment_method": "razorpay",
-            "payment_status": "paid",
-            "payment_id": payload.razorpay_payment_id,
-            "razorpay_order_id": payload.razorpay_order_id,
-            "order_status": "placed",
-            "created_at": datetime.now(timezone.utc).isoformat(),
-        }
-        await db.orders.insert_one(order)
-        for it in payload.items:
-            await db.products.update_one(
-                {"id": it["product_id"]}, 
-                {"$inc": {"stock": -safe_int(it["quantity"])}}
-            )
-        await db.cart.delete_one({"user_id": payload.user_id})
-        order.pop('_id', None)
-        logger.info(f"✅ Order created after payment: {order['id']}")
-        return {
-            "success": True,
-            "order": order,
-            "message": "Payment verified and order placed successfully"
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"❌ Payment verification failed: {e}")
-        raise HTTPException(500, f"Payment verification failed: {str(e)}")
-
 # ================= ORDERS ===========================
 @api.post("/orders/{uid}")
 async def place_order(uid: str, payload: dict = Body(...)):
@@ -998,15 +1045,30 @@ async def place_order(uid: str, payload: dict = Body(...)):
             "total_amount": total,
             "delivery_address": payload["delivery_address"],
             "payment_method": payload.get("payment_method", "online"),
-            "payment_status": "pending",
+            "payment_status": "paid" if payload.get("payment_method") == "card" else "pending",
             "order_status": "placed",
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
+        
+        # Add card details if payment method is card
+        if payload.get("payment_method") == "card" and payload.get("card_last4"):
+            order["card_last4"] = payload.get("card_last4")
+        
         await db.orders.insert_one(order)
+        
+        # Update product stock
         for it in payload["items"]:
-            await db.products.update_one({"id": it["product_id"]}, {"$inc": {"stock": -safe_int(it["quantity"])}})
+            await db.products.update_one(
+                {"id": it["product_id"]}, 
+                {"$inc": {"stock": -safe_int(it["quantity"])}}
+            )
+        
+        # Clear user's cart
         await db.cart.delete_one({"user_id": uid})
+        
         order.pop('_id', None)
+        
+        logger.info(f"✅ Order created: {order['id']} - Total: ₹{total} - Payment: {order['payment_method']}")
         return order
     except HTTPException:
         raise
